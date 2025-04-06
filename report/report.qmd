@@ -1,0 +1,506 @@
+---
+title: Homework 6 - Creating a resume database
+author:
+    - name: Alexa Lauer
+      email: lauera@vcu.edu
+date: last-modified
+format:
+    html:
+        theme: cosmo
+        toc: true
+        embed-resources: true
+        code-copy: true
+execute:
+  echo: false
+  eval: true
+  cache: false
+---
+
+The document includes a Python-based script that interacts with a MySQL database to run queries, execute DDL files, and display database contents in HTML format. Using SQLAlchemy for database connections, pandas for data manipulation, and .env file configuration for secure credential handling, it provides functions to connect to a database, execute SQL queries, handle various SQL and connection errors, and return results as HTML tables. Additionally, the project structure includes .env file configurations, automated DDL execution, and SQL query examples for common data retrieval tasks.
+
+GITHUB URL:  https://github.com/cmsc-vcu/cmsc408-fa2024-hw6-alexalauer
+
+```{python}
+import os
+import sys
+import pandas as pd
+from tabulate import tabulate
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import ArgumentError, NoSuchModuleError, OperationalError, ProgrammingError
+
+def run_sql_and_return_df(sql, cnx):
+    """Given an SQL command and connection string, return a DataFrame."""
+
+    # Check if the connection is None
+    if cnx is None:
+        error_message = "No valid connection. See above."
+        df = pd.DataFrame({'ErrorType': ['ConnectionError'], 'ErrorMessage': [error_message]})
+        return df.to_html(index=False)
+
+    try:
+        df = pd.read_sql(sql, cnx)
+        if df.empty:
+            # Create a single-row DataFrame with all columns as None
+            df = pd.DataFrame([["no records returned"]+ [''] * (len(df.columns) - 1) ], columns=df.columns)
+
+        # Convert the DataFrame to HTML and use custom styling to span columns if needed
+        html_output = df.to_html(index=False, na_rep="", justify="center")
+
+        # Add colspan attribute to span columns if rendering in an environment that supports it
+        html_output = html_output.replace('<td>no records found</td>', f'<td colspan="{len(df.columns)}">no records found</td>')
+        return html_output
+
+    except OperationalError as e:
+        # Catch connection or database errors
+        error_message = f"Operational Error: {str(e)}"
+        df = pd.DataFrame({'ErrorType': ['OperationalError'], 'ErrorMessage': [error_message]})
+    except ProgrammingError as e:
+        # Catch SQL syntax errors or issues with the command
+        error_message = f"Programming Error: {str(e)}"
+        df = pd.DataFrame({'ErrorType': ['ProgrammingError'], 'ErrorMessage': [error_message]})
+    except mysql.connector.Error as e:
+        # Catch MySQL-specific errors
+        error_message = f"MySQL Connector Error: {str(e)}"
+        df = pd.DataFrame({'ErrorType': ['MySQL Connector Error'], 'ErrorMessage': [error_message]})
+    except Exception as e:
+        # Catch all other exceptions
+        error_message = f"Unknown Error: {str(e)}"
+        df = pd.DataFrame({'ErrorType': ['UnknownError'], 'ErrorMessage': [error_message]})
+    
+    return df.to_html(index=False)
+
+def create_database_engine(uri):
+    """Create an SQLAlchemy engine with error handling and test the connection."""
+
+    try:
+        # Attempt to create the engine
+        engine = create_engine(uri)
+
+        # Test the connection with a lightweight query
+
+        run_sql_and_return_df("select 1 from dual",engine)
+
+#        with engine.connect() as connection:
+#            connection.execute(text("SELECT 1"))
+        
+        return engine  # Return the engine if connection test is successful
+
+    except sqlalchemy.exc.ArgumentError as e:
+        error_message = f"URI Error: {e}"
+    except sqlalchemy.exc.NoSuchModuleError as e:
+        error_message = f"Database driver not found: {e}"
+    except sqlalchemy.exc.OperationalError as e:
+        error_message = f"Operational error: {e}"
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {e}"
+    
+    return None  # Return None if any error occurs
+
+def execute_ddl_from_file(filename, cnx):
+    """
+    Executes DDL statements from a file on a given SQLAlchemy connection, 
+    capturing any errors and results.
+    """
+    messages = []
+    errors = []
+
+    with open(filename, 'r', encoding='utf-8') as file:
+        ddl_commands = file.read()
+
+    # Split commands if needed, such as if commands are separated by semicolons
+    ddl_statements = [cmd.strip() for cmd in ddl_commands.split(';') if cmd.strip()]
+
+    with cnx.connect() as connection:
+        for statement in ddl_statements:
+            try:
+                result = connection.execute(text(statement))
+                # Capture the result, if any
+                result_info = result.rowcount if result.rowcount != -1 else "No rows affected"
+                messages.append(f"Executed statement: {statement}<br/>Result: {result_info}<br/>")
+            except Exception as e:
+                # Capture the error message if execution fails
+                errors.append(f"<hr/>Error executing statement: <b>{statement}</b><br/>    Error: {str(e)}<br/>")
+
+    return messages, errors
+
+```
+
+```{python}
+# modify config_map to reflect credentials needed by this program
+# These variables are set in your .env file
+config_map = {
+    'user':'CMSC408_USER',
+    'password':'CMSC408_PASSWORD',
+    'host':'CMSC408_HOST',
+    'database':'HW6_DB_NAME'
+}
+# load and store credentials
+load_dotenv()
+config = {}
+for key in config_map.keys():
+    config[key] = os.getenv(config_map[key])
+
+errors = []
+for param in config.keys():
+    if config[param] is None:
+        flag = True
+        errors.append(f"Missing {config_map[param]} in .env file.")
+
+cnx = None
+error_df=""
+if errors:
+    errors.append("All subsequent SQL commands will fail.")
+    errors.append("Fix the .env file and rerun quarto ...")
+    # Convert errors to a DataFrame
+    error_df = pd.DataFrame({'Errors loading .env file': errors})
+    error_df
+else:
+# build a sqlalchemy engine string
+    engine_uri = f"mysql+pymysql://{config['user']}:{config['password']}@{config['host']}/{config['database']}"
+
+    # create and test the database connection.
+    cnx = create_database_engine( engine_uri )
+
+```
+
+## Overview and description
+
+The project involves creating a database to capture and organize the collective skills, certifications, and roles of a small team of designers and developers in a company run by an eccentric "sensei." This "company resume" database will store information about each team member's skills and roles, allowing the sensei to quickly find employees with specific expertise, view individual skill profiles, and identify skill gaps.
+
+The database will have tables for skills, employees, roles, and the relationships between them. The Skills table will store each skill's name, description, a tag, URL, and time commitment, including skills the team aims to acquire in the future. The Employees table will capture each employee's personal and professional information, including LinkedIn and Discord details, headshots, and bios. The Roles table defines each role's name and display priority, supporting well-organized reports.
+
+Two relationship tables will connect employees with skills and roles. The Employee Skills table will log when employees acquire each skill, including anticipated completion dates for in-progress certifications. The Employee Roles table will track role assignments, storing the start date for each role an employee holds. This setup will give the sensei easy access to the company's skillset, supporting better planning and growth strategies.
+
+## Crows-foot diagram
+
+The Crow's Foot diagram illustrates the relationships and attributes among five key entities in a database schema designed to manage information about people, their skills, roles, and the associations between them.
+
+1. Entities:
+
+    - PEOPLE: This entity contains details about individuals, including their first name, last name, email address, LinkedIn profile, headshot, Discord handle, brief biography, and the date they joined.
+
+    - SKILLS: This entity lists various skills available, with attributes such as the skill's name, description, associated tag, URL for more information, and the time commitment required to acquire or develop the skill.
+
+    - PEOPLESKILLS: This associative entity captures the relationship between people and their skills, indicating which skills a person has acquired and the date of acquisition.
+
+    - ROLES: This entity defines different roles within the organization, with attributes that include the role name and its sort priority, determining the order of importance or hierarchy.
+
+    - PEOPLE_ROLES: This associative entity links people to the roles they hold within the organization, including the date each role was acquired.
+
+2. Relationships:
+
+    - Acquisition of Skills: Each person can acquire multiple skills, creating a one-to-many relationship from PEOPLE to PEOPLESKILLS. This indicates that one person can have many skills, while each skill entry corresponds to one specific individual.
+    
+    - Role Assignments: Each person can hold multiple roles, represented by the relationship between PEOPLE and PEOPLE_ROLES. This reflects the idea that a person can assume different positions within an organization over time.
+    
+    - Skill Listings: The SKILLS entity is linked to PEOPLESKILLS, showing that a skill can be held by multiple people.
+    
+    - Role Definitions: The ROLES entity is linked to PEOPLE_ROLES, indicating that a role can be assigned to multiple individuals, showcasing the flexibility of role distribution within the organization.
+
+Overall, this diagram provides a clear visual representation of how individuals are related to their skills and roles, facilitating better understanding and management of personnel and their capabilities within an organization.
+
+```{mermaid}
+%%| echo: false
+erDiagram
+    SKILLS ||--o{ PEOPLESKILLS : includes
+    PEOPLE ||--o{ PEOPLESKILLS : acquires
+    PEOPLE ||--o{ PEOPLE_ROLES : has
+    ROLES ||--o{ PEOPLE_ROLES : assigned
+    SKILLS {
+        int id
+        string name
+        string description
+        string tag
+        string url
+        string time_commitment
+    }
+    PEOPLESKILLS {
+        int id
+        int skills_id
+        int people_id
+        date date_acquired
+    }
+    PEOPLE {
+        int id
+        string first_name
+        string last_name
+        string email
+        string linkedin_url
+        string headshot_url
+        string discord_handle
+        string brief_bio
+        date date_joined
+    }
+    PEOPLE_ROLES {
+        int id
+        int people_id
+        int role_id
+        date date_role_acquired
+    }
+    ROLES {
+        int id
+        string name
+        int sort_priority
+    }
+```
+
+## Loading the database
+
+```{python}
+#| output: asis
+
+ddl_file_name = "./my-ddl.sql"
+
+if not errors:
+    messages,errors = execute_ddl_from_file( ddl_file_name, cnx)
+
+if errors:
+    for error in errors:
+        print(f"{error}<br/>")
+else:
+    print(f"No errors detected while loading: {ddl_file_name}")
+
+```
+
+
+## Examples of data in the database
+
+The following sections provide an overview of the schema including table names, and number of rows and columns in each table.
+
+For the people, skills, and roles tables, a description of each table is presented along with it's contents.
+
+### Tables and metrics in the database
+
+```{python}
+#| echo: false
+sql = f"""
+WITH TableInfo AS (
+    SELECT 
+        table_name AS TableName,
+        table_rows AS RecordCount
+    FROM 
+        information_schema.tables
+    WHERE 
+        table_schema = DATABASE()
+),
+ColumnInfo AS (
+    SELECT 
+        table_name AS TableName,
+        COUNT(column_name) AS ColumnCount
+    FROM 
+        information_schema.columns
+    WHERE 
+        table_schema = DATABASE()
+    GROUP BY 
+        table_name
+)
+SELECT 
+    t.TableName,
+    t.RecordCount,
+    c.ColumnCount
+FROM 
+    TableInfo t
+JOIN 
+    ColumnInfo c ON t.TableName = c.TableName;
+"""
+run_sql_and_return_df( sql,cnx )
+
+```
+
+### People table
+
+The *people* table contains elements that describe the information about an employee
+
+Below is a list of data in the *people* table.
+
+```{python}
+#| echo: true
+sql = f"""
+select * from people;
+"""
+run_sql_and_return_df( sql,cnx )
+
+```
+
+### Skills table
+
+The *skills* table contains elements that describe the possible skills the employees have
+
+Below is a list of data in the *skills* table.
+
+```{python}
+#| echo: true
+sql = """
+select * from skills
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### Roles table
+
+The *roles* table contains elements that describe all of the roles in the company an employee can hold 
+
+Below is a list of data in the *roles* table.
+
+```{python}
+#| echo: true
+sql = """
+select * from roles
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+
+## Sample queries
+
+### List skills, names, tags and descriptions ordered by name
+
+```{python}
+#| echo: true
+sql = """
+SELECT skills.name, skills.tag, skills.description
+FROM skills
+ORDER BY skills.name ASC
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### List people names and email addresses ordered by last_name
+
+```{python}
+#| echo: true
+sql = """
+SELECT CONCAT(people.first_name, ' ', people.last_name) AS full_name, people.email
+FROM people
+ORDER BY people.last_name ASC;
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+
+### List skill names of Person 1
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    CONCAT(people.first_name, ' ', people.last_name) AS "Employee name",
+    skills.name AS skill_name
+FROM 
+    peopleskills
+        JOIN skills ON peopleskills.skills_id = skills.id
+        JOIN people ON peopleskills.people_id = people.id
+WHERE 
+    people.last_name = 'Person 1'
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### List people names with Skill 6
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    CONCAT(people.first_name, ' ', people.last_name) AS "Employee name"
+FROM 
+    peopleskills
+        JOIN skills ON peopleskills.skills_id = skills.id
+        JOIN people ON peopleskills.people_id = people.id
+WHERE
+    skills.tag = 'Skill 6'
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### List people with a DEVELOPER role
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    CONCAT(people.first_name, ' ', people.last_name) AS "Employee name"
+FROM 
+    peopleroles
+        JOIN roles ON peopleroles.roles_id = roles.id
+        JOIN people ON peopleroles.people_id = people.id
+WHERE 
+    roles.name = 'Developer'
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+
+### List names and email addresses of people without skills
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    CONCAT(people.first_name, ' ', people.last_name) AS "Employee name", people.email
+FROM 
+    people
+        LEFT JOIN peopleskills ON people.id = peopleskills.people_id
+WHERE
+    peopleskills.people_id IS NULL
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### List names and tags of unused skills
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    skills.name, skills.tag
+FROM 
+    skills 
+        LEFT JOIN peopleskills ON skills.id = peopleskills.skills_id
+WHERE 
+    peopleskills.skills_id IS NULL
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+
+### List people names and skill names with the BOSS role
+
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    CONCAT(people.first_name, ' ', people.last_name) AS "Employee Name",
+    skills.name AS "Skill Name"
+FROM 
+    people
+        JOIN peopleroles ON people.id = peopleroles.people_id
+        JOIN roles ON peopleroles.roles_id = roles.id
+        JOIN peopleskills ON people.id = peopleskills.people_id
+        JOIN skills ON peopleskills.skills_id = skills.id
+WHERE 
+    roles.name = 'Boss';
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+### List ids and names of unused roles
+```{python}
+#| echo: true
+sql = """
+SELECT 
+    roles.id, roles.name 
+FROM 
+    roles
+        LEFT JOIN peopleroles ON roles.id = peopleroles.roles_id
+WHERE peopleroles.roles_id IS NULL
+"""
+run_sql_and_return_df( sql, cnx )
+```
+
+## Reflection
+
+I struggled a little with getting all the tables to work properly, there are a lot of small syntax nuances that will make the program crash if not done properly. The erorr messages were incredibly helpful to find some of these, but often I needed to search through any of SQL code to find where I was missing a commma or something of the sort. As it is the first table in my report still does not calculate everything correctly. For some reason it stil says that my roles table has a recordCount of 0, even though it does not. Overall, I think the assignment helped me understand how to make tables in a ddl from scratch very effectively. 
+
+For homework 7, I had difficultly at the beginning of the assingnment due to my naming conventions from homework 6 and therefore had to go back to my ddl and rename all of my columns (for the autograder). Once all of the tables were sorted out, I jumped right into the queries. I had already completed the first two the week before and needed to do the remaining ones. Starting off I was able to piece together the pieces until I hit the Developer query. I know other students had the same issue where the peopleroles table was being made but there was nothing inside of it even though the INSERT commands were present. It took hours to determine the issue was that I needed a COMMIT; after the code. From then on, I was once again able to piece everything togther. Some of the queries were difficult to get a hang of, but eventually the syntax was starting to make sense. 
